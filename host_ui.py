@@ -24,27 +24,12 @@ from PyQt6.QtWidgets import QTableWidget
 from PyQt6.QtWidgets import QTableWidgetItem
 from PyQt6.QtWidgets import QVBoxLayout
 from PyQt6.QtWidgets import QWidget
+from PyQt6.QtWidgets import QMessageBox, QInputDialog
 
 import style_sheet as styles
 from libraries.bluetooth.bluez import BluetoothDeviceManager
-from libraries.bluetooth.agent import Agent
 from libraries.bluetooth import constants
 from Utils.utils import get_controller_interface_details
-
-from PyQt6.QtCore import QObject, pyqtSignal
-
-class BluetoothAgentHandler(QObject):
-    pairingRequested = pyqtSignal(str)  # device_path as str
-
-    def __init__(self):
-        super().__init__()
-        import dbus
-        bus = dbus.SystemBus()
-        self.agent = Agent(bus, "/test/agent", pairing_callback=self.emit_pairing_request)
-
-    def emit_pairing_request(self, device_path):
-        print(f"[BluetoothAgentHandler] Emitting pairing request for: {device_path}")
-        self.pairingRequested.emit(device_path)
 
 
 class TestApplication(QWidget):
@@ -59,9 +44,6 @@ class TestApplication(QWidget):
             log: Logger instance.
         """
         super().__init__()
-        self.bt_agent_handler = BluetoothAgentHandler()
-        self.bt_agent_handler.pairingRequested.connect(self.show_pairing_popup)
-
         self.back_callback = back_callback
         self.interface = interface
         self.log_path = log.log_path
@@ -792,60 +774,39 @@ class TestApplication(QWidget):
                 self.profiles_list_widget.takeItem(i)
                 break
 
+    def handle_pairing_request(self, req_type, device, parameter=None):
+        """Handle incoming pairing requests from BlueZ via Agent."""
+        device_address = device.split("dev_")[-1].replace("_", ":")
+        if req_type == "pin":
+            pin, ok = QInputDialog.getText(self, "Pairing Request", f"Enter PIN for device {device_address}:")
+            if ok:
+                return pin
+            raise dbus.exceptions.DBusException("org.bluez.Error.Rejected")
+        elif req_type == "passkey":
+            passkey, ok = QInputDialog.getInt(self, "Pairing Request", f"Enter Passkey for device {device_address}:")
+            if ok:
+                return passkey
+            raise dbus.exceptions.DBusException("org.bluez.Error.Rejected")
+        elif req_type == "confirm":
+            reply = QMessageBox.question(self, "Confirm Pairing",f"Device {device_address} requests to pair with passkey: {parameter}\nAccept?", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+            if reply == QMessageBox.StandardButton.Yes:
+                return
+            raise dbus.exceptions.DBusException("org.bluez.Error.Rejected")
+        elif req_type == "authorize":
+            reply = QMessageBox.question(self, "Authorize Service", f"Device {device_address} wants to use service {parameter}\nAllow?",QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+            if reply == QMessageBox.StandardButton.Yes:
+                return
+            raise dbus.exceptions.DBusException("org.bluez.Error.Rejected")
+
     def register_agent_clicked(self):
-        """Triggered when the 'Register Agent' button is clicked."""
         selected_capability = self.capability_combobox.currentText()
-        self.log.info("Registering agent with capability: %s", selected_capability)
-
+        self.log.info("Registering agent with capability:%s", selected_capability)
         try:
-            bus = dbus.SystemBus()
-            #self.agent = Agent(bus, "/test/agent", pairing_callback=self.show_pairing_popup)
-            obj = bus.get_object("org.bluez", "/org/bluez")
-            manager = dbus.Interface(obj, "org.bluez.AgentManager1")
-            manager.RegisterAgent("/test/agent", selected_capability)
-            manager.RequestDefaultAgent("/test/agent")
-
-            # ✅ Set adapter properties conditionally
-            if selected_capability == "DisplayYesNo":
-                adapter_path = "/org/bluez/hci0"  # adjust if not hci0
-                adapter_obj = bus.get_object("org.bluez", adapter_path)
-                adapter_props = dbus.Interface(adapter_obj, "org.freedesktop.DBus.Properties")
-
-                adapter_props.Set("org.bluez.Adapter1", "Pairable", dbus.Boolean(True))
-                adapter_props.Set("org.bluez.Adapter1", "Discoverable", dbus.Boolean(True))
-                adapter_props.Set("org.bluez.Adapter1", "DiscoverableTimeout", dbus.UInt32(0))
-                adapter_props.Set("org.bluez.Adapter1", "PairableTimeout", dbus.UInt32(0))
-                self.log.info("Adapter set to pairable and discoverable with no timeout")
-
-            QMessageBox.information(self, "Agent Registered",
-                                    f"Agent registered with capability: {selected_capability}")
-
+            self.bluetooth_device_manager.register_agent(capability=selected_capability, ui_callback=self.handle_pairing_request)
+            QMessageBox.information(self, "Agent Registered", f"Agent registered with capability: {selected_capability}")
         except Exception as error:
-            self.log.error("Failed to register agent: %s", error)
+            self.log.info("Failed to register agent:%s", error)
             QMessageBox.critical(self, "Registration Failed", f"Could not register agent.\n{error}")
-
-
-    def show_pairing_popup(self, device_path: str):
-        print(f"[UI] show_pairing_popup called for: {device_path}")
-        device_address = self.bluetooth_device_manager.get_device_address_from_path(device_path)
-        result = QMessageBox.question(
-            self,
-            "Pairing Request",
-            f"A device ({device_address}) wants to pair. Accept?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-        )
-        if result == QMessageBox.StandardButton.Yes:
-            self.bluetooth_device_manager.pair(device_address)
-
-    def show_authorization_popup(self, device_path):
-        device_address = self.bluetooth_device_manager.get_device_address_from_path(device_path)
-        result = QMessageBox.question(
-            self,
-            "Authorize Device",
-            f"Device {device_address} wants to connect.\nDo you allow it?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-        )
-        return result == QMessageBox.StandardButton.Yes
 
     def test_application_clicked(self):
         """Create and display the main testing application GUI."""

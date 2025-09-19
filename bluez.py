@@ -6,6 +6,8 @@ import subprocess
 import time
 from dbus.mainloop.glib import DBusGMainLoop
 from gi.repository import GLib
+dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
+
 
 from libraries.bluetooth import constants
 from Utils.utils import run
@@ -31,6 +33,33 @@ class BluetoothDeviceManager:
         self.last_session_path = None
         self.opp_process = None
         self.stream_process = None
+
+    class Agent(dbus.service.Object):
+        """Implements BlueZ org.bluez.Agent1 to handle incoming pairing requests."""
+
+        def __init__(self, bus, path, ui_callback):
+            super().__init__(bus, path)
+            self.ui_callback = ui_callback
+
+        @dbus.service.method("org.bluez.Agent1", in_signature="o", out_signature="s")
+        def RequestPinCode(self, device):
+            return self.ui_callback("pin", device)
+
+        @dbus.service.method("org.bluez.Agent1", in_signature="o", out_signature="u")
+        def RequestPasskey(self, device):
+            return int(self.ui_callback("passkey", device))
+
+        @dbus.service.method("org.bluez.Agent1", in_signature="ou")
+        def RequestConfirmation(self, device, passkey):
+            return self.ui_callback("confirm", device, passkey)
+
+        @dbus.service.method("org.bluez.Agent1", in_signature="os")
+        def AuthorizeService(self, device, uuid):
+            return self.ui_callback("authorize", device, uuid)
+
+        @dbus.service.method("org.bluez.Agent1")
+        def Cancel(self):
+            print("Pairing cancelled by remote device")
 
     def get_paired_devices(self):
         """Retrieves all Bluetooth devices that are currently paired with the adapter.
@@ -111,16 +140,16 @@ class BluetoothDeviceManager:
                     else:
                         self.log.warning("Device path not found")
 
-    def register_agent(self, capability=None):
-        """Register this object as a Bluetooth pairing agent."""
-        try:
-            agent_manager = dbus.Interface(self.bus.get_object(constants.bluez_service, constants.bluez_path), constants.agent_interface)
-            agent_manager.RegisterAgent(constants.agent_path, capability)
-            agent_manager.RequestDefaultAgent(constants.agent_path)
-            self.log.info("Registered with capability:%s", capability)
-        except dbus.exceptions.DBusException as error:
-            self.log.error("Failed to register agent: %s", error)
-            return False
+    # --- inside BluetoothDeviceManager ---
+    def register_agent(self, capability="DisplayYesNo", ui_callback=None):
+        """Registers an agent with BlueZ for handling pairing requests."""
+        path = "/test/agent"
+        self.agent = self.Agent(self.bus, path, ui_callback)
+        manager = dbus.Interface(self.bus.get_object("org.bluez", "/org/bluez"), "org.bluez.AgentManager1")
+        manager.RegisterAgent(path, capability)
+        manager.RequestDefaultAgent(path)
+        print(f"Agent registered with capability {capability}")
+        return True
 
     def pair(self, address):
         """Pairs with a Bluetooth device using the given controller interface.
