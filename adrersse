@@ -1,0 +1,4 @@
+def extract_address_from_path(path: str) -> str:
+    if path and "dev_" in path:
+        return path.split("dev_")[-1].replace("_", ":")
+    return path
