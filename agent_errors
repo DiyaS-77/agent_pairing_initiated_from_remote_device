@@ -1,0 +1,64 @@
+import dbus
+import dbus.mainloop.glib
+import dbus.service
+import os
+import subprocess
+import time
+from dbus.mainloop.glib import DBusGMainLoop
+from gi.repository import GLib
+
+from libraries.bluetooth import constants
+from Utils.utils import run
+
+import dbus
+import dbus.service
+import dbus.mainloop.glib
+
+class BluetoothDeviceManager:
+    """A class for managing Bluetooth devices using the BlueZ D-Bus API."""
+
+    def __init__(self, log=None, interface=None):
+        """Initialize the BluetoothDeviceManager by setting up the system bus and adapter.
+
+        Args:
+            log: Logger instance.
+            interface: Bluetooth adapter interface (e.g., hci0).
+        """
+        self.bus = dbus.SystemBus()
+        self.interface = interface
+        self.log = log
+        self.adapter_path = f'{constants.bluez_path}/{self.interface}'
+        self.adapter_proxy = self.bus.get_object(constants.bluez_service, self.adapter_path)
+        self.adapter_properties = dbus.Interface(self.adapter_proxy, constants.properties_interface)
+        self.adapter = dbus.Interface(self.adapter_proxy, constants.adapter_interface)
+        self.object_manager = dbus.Interface(self.bus.get_object(constants.bluez_service, "/"), constants.object_manager_interface)
+        self.last_session_path = None
+        self.opp_process = None
+        self.stream_process = None
+
+    class Agent(dbus.service.Object):
+        """Implements BlueZ org.bluez.Agent1 to handle incoming pairing requests."""
+
+        def __init__(self, bus, path, ui_callback):
+            super().__init__(bus, path)
+            self.ui_callback = ui_callback  # callback in HOST_ui.py
+
+        @dbus.service.method("org.bluez.Agent1", in_signature="o", out_signature="s")
+        def RequestPinCode(self, device):
+            return self.ui_callback("PIN", device)
+
+        @dbus.service.method("org.bluez.Agent1", in_signature="o", out_signature="u")
+        def RequestPasskey(self, device):
+            return int(self.ui_callback("PASSKEY", device))
+
+        @dbus.service.method("org.bluez.Agent1", in_signature="ou")
+        def RequestConfirmation(self, device, passkey):
+            return self.ui_callback("CONFIRM", device, passkey)
+
+        @dbus.service.method("org.bluez.Agent1", in_signature="os")
+        def AuthorizeService(self, device, uuid):
+            return self.ui_callback("AUTHORIZE", device, uuid)
+
+        @dbus.service.method("org.bluez.Agent1")
+        def Cancel(self):
+            print("Pairing cancelled by remote device")
