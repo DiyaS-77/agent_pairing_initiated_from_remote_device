@@ -1,0 +1,186 @@
+import dbus
+import dbus.service
+from PyQt6.QtWidgets import QMessageBox
+
+class Agent(dbus.service.Object):
+    def __init__(self, bus, path, ui_callback):
+        super().__init__(bus, path)
+        self.ui_callback = ui_callback  # function in UI to show prompt
+
+    @dbus.service.method("org.bluez.Agent1", in_signature="o", out_signature="s")
+    def RequestPinCode(self, device):
+        return self.ui_callback("PIN", device)
+
+    @dbus.service.method("org.bluez.Agent1", in_signature="o", out_signature="u")
+    def RequestPasskey(self, device):
+        return int(self.ui_callback("PASSKEY", device))
+
+    @dbus.service.method("org.bluez.Agent1", in_signature="ou")
+    def RequestConfirmation(self, device, passkey):
+        return self.ui_callback("CONFIRM", device, passkey)
+
+    @dbus.service.method("org.bluez.Agent1", in_signature="os")
+    def AuthorizeService(self, device, uuid):
+        return self.ui_callback("AUTHORIZE", device, uuid)
+
+    @dbus.service.method("org.bluez.Agent1")
+    def Cancel(self):
+        print("Pairing cancelled by remote device")
+
+
+in host ui 
+
+def handle_pairing_request(self, req_type, device, extra=None):
+    if req_type == "PIN":
+        pin, ok = QInputDialog.getText(self, "Pairing Request",
+                                       f"Enter PIN for {device}:")
+        if ok:
+            return pin
+        raise dbus.exceptions.DBusException("org.bluez.Error.Rejected")
+
+    elif req_type == "PASSKEY":
+        passkey, ok = QInputDialog.getInt(self, "Pairing Request",
+                                          f"Enter Passkey for {device}:")
+        if ok:
+            return passkey
+        raise dbus.exceptions.DBusException("org.bluez.Error.Rejected")
+
+    elif req_type == "CONFIRM":
+        reply = QMessageBox.question(
+            self, "Confirm Pairing",
+            f"Device {device} requests to pair with passkey: {extra}\nAccept?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            return
+        raise dbus.exceptions.DBusException("org.bluez.Error.Rejected")
+
+    elif req_type == "AUTHORIZE":
+        reply = QMessageBox.question(
+            self, "Authorize Service",
+            f"Device {device} wants to use service {extra}\nAllow?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            return
+        raise dbus.exceptions.DBusException("org.bluez.Error.Rejected")
+
+
+def register_agent_clicked(self):
+    selected_capability = self.capability_combobox.currentText()
+    self.log.info("Registering agent with capability:%s", selected_capability)
+    try:
+        self.bluetooth_device_manager.register_agent(
+            capability=selected_capability,
+            ui_callback=self.handle_pairing_request   # pass UI callback
+        )
+        QMessageBox.information(self, "Agent Registered",
+                                f"Agent registered with capability: {selected_capability}")
+    except Exception as error:
+        self.log.info("Failed to register agent:%s", error)
+        QMessageBox.critical(self, "Registration Failed",
+                             f"Could not register agent.\n{error}")
+
+import dbus
+import dbus.service
+import dbus.mainloop.glib
+
+class Agent(dbus.service.Object):
+    """Implements BlueZ org.bluez.Agent1 to handle incoming pairing requests."""
+
+    def __init__(self, bus, path, ui_callback):
+        super().__init__(bus, path)
+        self.ui_callback = ui_callback  # callback in HOST_ui.py
+
+    @dbus.service.method("org.bluez.Agent1", in_signature="o", out_signature="s")
+    def RequestPinCode(self, device):
+        return self.ui_callback("PIN", device)
+
+    @dbus.service.method("org.bluez.Agent1", in_signature="o", out_signature="u")
+    def RequestPasskey(self, device):
+        return int(self.ui_callback("PASSKEY", device))
+
+    @dbus.service.method("org.bluez.Agent1", in_signature="ou")
+    def RequestConfirmation(self, device, passkey):
+        return self.ui_callback("CONFIRM", device, passkey)
+
+    @dbus.service.method("org.bluez.Agent1", in_signature="os")
+    def AuthorizeService(self, device, uuid):
+        return self.ui_callback("AUTHORIZE", device, uuid)
+
+    @dbus.service.method("org.bluez.Agent1")
+    def Cancel(self):
+        print("Pairing cancelled by remote device")
+
+# --- inside BluetoothDeviceManager ---
+def register_agent(self, capability="DisplayYesNo", ui_callback=None):
+    """Registers an agent with BlueZ for handling pairing requests."""
+    bus = dbus.SystemBus()
+    path = "/test/agent"
+    agent = Agent(bus, path, ui_callback)
+    manager = dbus.Interface(bus.get_object("org.bluez", "/org/bluez"),
+                             "org.bluez.AgentManager1")
+
+    # Register agent and make it default
+    manager.RegisterAgent(path, capability)
+    manager.RequestDefaultAgent(path)
+    print(f"Agent registered with capability {capability}")
+    return True
+
+
+def handle_pairing_request(self, req_type, device, extra=None):
+    """Handle incoming pairing requests from BlueZ via Agent."""
+    from PyQt6.QtWidgets import QMessageBox, QInputDialog
+
+    if req_type == "PIN":
+        pin, ok = QInputDialog.getText(self, "Pairing Request",
+                                       f"Enter PIN for device {device}:")
+        if ok:
+            return pin
+        raise dbus.exceptions.DBusException("org.bluez.Error.Rejected")
+
+    elif req_type == "PASSKEY":
+        passkey, ok = QInputDialog.getInt(self, "Pairing Request",
+                                          f"Enter Passkey for device {device}:")
+        if ok:
+            return passkey
+        raise dbus.exceptions.DBusException("org.bluez.Error.Rejected")
+
+    elif req_type == "CONFIRM":
+        reply = QMessageBox.question(
+            self, "Confirm Pairing",
+            f"Device {device} requests to pair with passkey: {extra}\nAccept?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            return
+        raise dbus.exceptions.DBusException("org.bluez.Error.Rejected")
+
+    elif req_type == "AUTHORIZE":
+        reply = QMessageBox.question(
+            self, "Authorize Service",
+            f"Device {device} wants to use service {extra}\nAllow?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            return
+        raise dbus.exceptions.DBusException("org.bluez.Error.Rejected")
+
+def register_agent_clicked(self):
+    selected_capability = self.capability_combobox.currentText()
+    self.log.info("Registering agent with capability:%s", selected_capability)
+    try:
+        self.bluetooth_device_manager.register_agent(
+            capability=selected_capability,
+            ui_callback=self.handle_pairing_request  # <-- pass UI handler
+        )
+        QMessageBox.information(self, "Agent Registered",
+                                f"Agent registered with capability: {selected_capability}")
+    except Exception as error:
+        self.log.info("Failed to register agent:%s", error)
+        QMessageBox.critical(self, "Registration Failed",
+                             f"Could not register agent.\n{error}")
+
+
+
+
