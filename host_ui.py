@@ -1,11 +1,10 @@
 import os
 import re
-import dbus
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtCore import QTimer
 from PyQt6.QtGui import QFont
-from PyQt6.QtWidgets import QComboBox
+from PyQt6.QtWidgets import QComboBox, QInputDialog
 from PyQt6.QtWidgets import QFileDialog
 from PyQt6.QtWidgets import QGridLayout
 from PyQt6.QtWidgets import QGroupBox
@@ -24,12 +23,11 @@ from PyQt6.QtWidgets import QTableWidget
 from PyQt6.QtWidgets import QTableWidgetItem
 from PyQt6.QtWidgets import QVBoxLayout
 from PyQt6.QtWidgets import QWidget
-from PyQt6.QtWidgets import QMessageBox, QInputDialog
 
 import style_sheet as styles
 from libraries.bluetooth.bluez import BluetoothDeviceManager
-from libraries.bluetooth import constants
 from Utils.utils import get_controller_interface_details
+from Utils.utils import validate_bluetooth_address
 
 
 class TestApplication(QWidget):
@@ -53,15 +51,14 @@ class TestApplication(QWidget):
         self.device_tab_widget = None
         self.gap_button = None
         self.grid = None
-        self.hcidump_log_name = None
         self.main_grid_layout = None
         self.profile_methods_layout = None
         self.profile_methods_widget = None
         self.profiles_list_widget = None
         self.refresh_button = None
-        self.test_application_clicked()
+        self.initialize_host_ui()
 
-    def populate_device_list(self):
+    def load_paired_devices(self):
         """Loads and displays all paired Bluetooth devices into the profiles list widget."""
         list_index = self.profiles_list_widget.count() - 1
         self.paired_devices = self.bluetooth_device_manager.get_paired_devices()
@@ -73,7 +70,7 @@ class TestApplication(QWidget):
             list_index += 1
             self.profiles_list_widget.insertItem(list_index, device_item)
 
-    def add_row(self, row, label, value):
+    def add_controller_details_row(self, row, label, value):
         """Adds a new row to the controller details grid layout.
 
         Args:
@@ -92,46 +89,33 @@ class TestApplication(QWidget):
         self.grid.addWidget(label_widget, row, 0)
         self.grid.addWidget(value_widget, row, 1)
 
-    def is_bluetooth_address(self, address):
-        """Validates whether the given string is a Bluetooth address.
-
-        Args:
-            address: The string to be validated.
-
-        Returns:
-            True if valid Bluetooth address, False otherwise.
-        """
-        pattern = r'^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$'
-        return bool(re.fullmatch(pattern, address))
-
-    def set_discoverable(self, enable):
+    def set_discoverable_mode(self, enable):
         """Enable or disable discoverable mode on the Bluetooth adapter.
 
         Args:
             enable: True to enable, False to disable.
         """
         if enable:
-            self.log.info("Discoverable is set to ON")
             self.set_discoverable_on_button.setEnabled(False)
             self.set_discoverable_off_button.setEnabled(True)
-            self.bluetooth_device_manager.set_discoverable(True)
+            self.bluetooth_device_manager.set_discoverable_mode(True)
             timeout = int(self.discoverable_timeout_input.text())
             if timeout > 0:
                 self.discoverable_timeout_timer = QTimer()
-                self.discoverable_timeout_timer.timeout.connect(lambda: self.set_discoverable(False))
+                self.discoverable_timeout_timer.timeout.connect(lambda: self.set_discoverable_mode(False))
                 self.discoverable_timeout_timer.setSingleShot(True)
                 self.discoverable_timeout_timer.start(timeout * 1000)
+            self.log.info("Discoverable mode is set to ON")
         else:
-            self.log.info("Discoverable is set to OFF")
             self.set_discoverable_on_button.setEnabled(True)
             self.set_discoverable_off_button.setEnabled(False)
-            self.bluetooth_device_manager.set_discoverable(False)
+            self.bluetooth_device_manager.set_discoverable_mode(False)
             if hasattr(self, 'discoverable_timeout_timer'):
                 self.discoverable_timeout_timer.stop()
+            self.log.info("Discoverable mode is set to OFF")
 
-    def set_discovery_on(self):
+    def start_device_discovery(self):
         """Start device discovery."""
-        self.log.info("Discovery has started")
         self.inquiry_timeout = int(self.inquiry_timeout_input.text()) * 1000
         if self.inquiry_timeout == 0:
             self.set_discovery_on_button.setEnabled(False)
@@ -139,34 +123,36 @@ class TestApplication(QWidget):
             self.bluetooth_device_manager.start_discovery()
         else:
             self.timer = QTimer()
-            self.timer.timeout.connect(self.show_discovery_table_timeout)
+            self.timer.timeout.connect(self.handle_discovery_timeout)
             self.timer.timeout.connect(lambda:self.set_discovery_off_button.setEnabled(False))
             self.timer.start(self.inquiry_timeout)
             self.set_discovery_on_button.setEnabled(False)
             self.set_discovery_off_button.setEnabled(True)
             self.bluetooth_device_manager.start_discovery()
+        self.log.info("Device discovery has started")
 
-    def show_discovery_table_timeout(self):
-        """Function to show the discovery table when timeout is over"""
+    def handle_discovery_timeout(self):
+        """Handles the Bluetooth discovery timeout event"""
         self.timer.stop()
         self.bluetooth_device_manager.stop_discovery()
-        self.show_discovery_table()
+        self.log.info("Discovery stopped due to timeout.")
+        self.display_discovered_devices()
 
-    def set_discovery_off(self):
-        """Function for Stop Discovery"""
-        self.log.info("Discovery has stopped")
+    def stop_device_discovery(self):
+        """Stops device Discovery"""
         self.set_discovery_off_button.setEnabled(False)
         self.timer = QTimer()
         if self.inquiry_timeout == 0:
             self.bluetooth_device_manager.stop_discovery()
-            self.show_discovery_table()
+            self.display_discovered_devices()
         else:
             self.timer.stop()
             self.bluetooth_device_manager.stop_discovery()
-            self.show_discovery_table()
+            self.display_discovered_devices()
             self.set_discovery_off_button.setEnabled(False)
+        self.log.info("Device discovery has stopped")
 
-    def show_discovery_table(self):
+    def display_discovered_devices(self):
         """Display discovered devices in a table with options to pair or connect."""
         self.timer.stop()
         bold_font = QFont()
@@ -175,7 +161,7 @@ class TestApplication(QWidget):
         small_font.setBold(True)
         small_font.setPointSize(8)
         discovered_devices = self.bluetooth_device_manager.get_discovered_devices()
-        self.clear_discovery_table_widgets()
+        self.clear_device_discovery_results()
         self.table_widget = QTableWidget(0, 3)
         self.table_widget.setHorizontalHeaderLabels(["DEVICE NAME", "BD_ADDR", "PROCEDURES"])
         self.table_widget.setFont(bold_font)
@@ -200,13 +186,13 @@ class TestApplication(QWidget):
             pair_button.setObjectName("PairButton")
             pair_button.setFont(small_font)
             pair_button.setStyleSheet(styles.color_style_sheet)
-            pair_button.clicked.connect(lambda _, addr = device_address: self.manage_device('pair', addr, load_profiles=False))
+            pair_button.clicked.connect(lambda _, addr = device_address: self.perform_device_action('pair', addr, load_profiles=False))
             button_layout.addWidget(pair_button)
             connect_button = QPushButton("CONNECT")
             connect_button.setObjectName("ConnectButton")
             connect_button.setFont(small_font)
             connect_button.setStyleSheet(styles.color_style_sheet)
-            connect_button.clicked.connect(lambda _, addr = device_address: self.manage_device('connect', addr, load_profiles=False))
+            connect_button.clicked.connect(lambda _, addr = device_address: self.perform_device_action('connect', addr, load_profiles=False))
             button_layout.addWidget(connect_button)
             button_widget.setLayout(button_layout)
             self.table_widget.setCellWidget(row, 2, button_widget)
@@ -215,16 +201,15 @@ class TestApplication(QWidget):
         self.table_widget.show()
         self.set_discovery_off_button.setEnabled(False)
 
-    def clear_discovery_table_widgets(self):
+    def clear_device_discovery_results(self):
         """Removes the discovery table if it exists to avoid stacking."""
         if hasattr(self, 'table_widget') and self.table_widget:
             self.profile_methods_layout.removeWidget(self.table_widget)
             self.table_widget.deleteLater()
             self.table_widget = None
 
-    def refresh(self):
+    def refresh_discovery_ui(self):
         """Refresh and clear the device discovery table."""
-        self.log.info("Refresh Button is pressed")
         if hasattr(self, 'table_widget') and self.table_widget:
             self.profile_methods_layout.removeWidget(self.table_widget)
             self.table_widget.deleteLater()
@@ -234,14 +219,15 @@ class TestApplication(QWidget):
             self.set_discovery_on_button.setEnabled(True)
             self.set_discovery_off_button.setEnabled(False)
             self.refresh_button.setEnabled(True)
+        self.log.info("Discovery UI refreshed successfully.")
 
-    def refresh_discoverable(self):
+    def reset_discoverable_timeout(self):
         """Reset discoverable timeout input to default (0)."""
-        self.log.info("Discoverable refresh button is pressed")
         self.discoverable_timeout_input.setText("0")
+        self.log.info("Discoverable timeout reset to 0.")
 
-    def add_device(self, device_address):
-        """Adds a device address to the paired devices list if not already present.
+    def add_paired_device_to_list(self, device_address):
+        """Adds a device to the paired devices list if not already present.
 
         Args:
             device_address: Bluetooth address of remote device.
@@ -266,7 +252,7 @@ class TestApplication(QWidget):
                 widget.setParent(None)
                 widget.deleteLater()
 
-    def profile_selected(self, profile_name=None):
+    def handle_profile_selection(self, profile_name=None):
         """Handles profile selection from either the list or a button."""
         if profile_name is None:
             selected_item = self.profiles_list_widget.currentItem()
@@ -275,21 +261,21 @@ class TestApplication(QWidget):
             selected_item_text = selected_item.text().strip()
         else:
             selected_item_text = profile_name.strip()
-        self.clear_discovery_table_widgets()
+        self.clear_device_discovery_results()
         self.clear_layout(self.profile_methods_layout)
         if hasattr(self, 'device_tab_widget') and self.device_tab_widget:
-            self.device_tab_widget.currentChanged.disconnect(self.on_profile_tab_changed)
+            self.device_tab_widget.currentChanged.disconnect(self.handle_profile_tab_change)
             self.profile_methods_layout.removeWidget(self.device_tab_widget)
             self.device_tab_widget.hide()
             self.device_tab_widget.setParent(None)
             self.device_tab_widget.deleteLater()
             self.device_tab_widget = None
-        QTimer.singleShot(0, lambda:(self.load_profile_tabs_for_device(selected_item_text)
-        if self.is_bluetooth_address(selected_item_text)else
-        self.build_gap_ui() if selected_item_text == "GAP"
+        QTimer.singleShot(0, lambda:(self.load_device_profile_tabs(selected_item_text)
+        if validate_bluetooth_address(selected_item_text)else
+        self.create_gap_profile_ui() if selected_item_text == "GAP"
         else None))
 
-    def build_gap_ui(self):
+    def create_gap_profile_ui(self):
         """Build and display the widgets for the GAP profile."""
         bold_font = QFont()
         bold_font.setBold(True)
@@ -315,15 +301,15 @@ class TestApplication(QWidget):
         self.set_discoverable_off_button.setObjectName("SetDiscoverableOffButton")
         self.set_discoverable_off_button.setStyleSheet(styles.color_style_sheet)
         self.set_discoverable_off_button.setEnabled(False)
-        self.set_discoverable_on_button.clicked.connect(lambda: self.set_discoverable(True))
-        self.set_discoverable_off_button.clicked.connect(lambda: self.set_discoverable(False))
+        self.set_discoverable_on_button.clicked.connect(lambda: self.set_discoverable_mode(True))
+        self.set_discoverable_off_button.clicked.connect(lambda: self.set_discoverable_mode(False))
         buttons_layout.addWidget(self.set_discoverable_on_button)
         buttons_layout.addWidget(self.set_discoverable_off_button)
         self.profile_methods_layout.addLayout(buttons_layout)
         self.refresh_button = QPushButton("REFRESH")
         self.refresh_button.setObjectName("RefreshButton")
         self.refresh_button.setStyleSheet(styles.color_style_sheet)
-        self.refresh_button.clicked.connect(self.refresh_discoverable)
+        self.refresh_button.clicked.connect(self.reset_discoverable_timeout)
         self.profile_methods_layout.addWidget(self.refresh_button)
         inquiry_label = QLabel("Inquiry:")
         inquiry_label.setObjectName("Inquiry")
@@ -343,11 +329,11 @@ class TestApplication(QWidget):
         self.set_discovery_on_button = QPushButton("START")
         self.set_discovery_on_button.setObjectName("SetDiscoveryOnButton")
         self.set_discovery_on_button.setStyleSheet(styles.color_style_sheet)
-        self.set_discovery_on_button.clicked.connect(self.set_discovery_on)
+        self.set_discovery_on_button.clicked.connect(self.start_device_discovery)
         self.set_discovery_off_button = QPushButton("STOP")
         self.set_discovery_off_button.setObjectName("SetDiscoveryOffButton")
         self.set_discovery_off_button.setStyleSheet(styles.color_style_sheet)
-        self.set_discovery_off_button.clicked.connect(self.set_discovery_off)
+        self.set_discovery_off_button.clicked.connect(self.stop_device_discovery)
         self.set_discovery_off_button.setEnabled(False)
         discovery_buttons_layout.addWidget(self.set_discovery_on_button)
         discovery_buttons_layout.addWidget(self.set_discovery_off_button)
@@ -362,18 +348,36 @@ class TestApplication(QWidget):
         register_agent_button.setObjectName("RegisterAgent")
         register_agent_button.setFont(bold_font)
         register_agent_button.setStyleSheet(styles.color_style_sheet)
-        register_agent_button.clicked.connect(self.register_agent_clicked)
+        register_agent_button.clicked.connect(self.register_bluetooth_agent)
         self.profile_methods_layout.addWidget(capability_label)
         self.profile_methods_layout.addWidget(self.capability_combobox)
         self.profile_methods_layout.addWidget(register_agent_button)
-        final_refresh_button = QPushButton("REFRESH")
-        final_refresh_button.setObjectName("RefreshButton")
-        final_refresh_button.setStyleSheet(styles.color_style_sheet)
-        final_refresh_button.clicked.connect(self.refresh)
-        self.profile_methods_layout.addWidget(final_refresh_button)
+        #Unregister agent button
+        unregister_agent_button = QPushButton("Unregister Agent")
+        unregister_agent_button.setObjectName("UnregisterAgent")
+        unregister_agent_button.setFont(bold_font)
+        unregister_agent_button.setStyleSheet(styles.color_style_sheet)
+        unregister_agent_button.clicked.connect(self.unregister_bluetooth_agent)
+        self.profile_methods_layout.addWidget(unregister_agent_button)
+
+        discovery_ui_refresh_button = QPushButton("REFRESH")
+        discovery_ui_refresh_button.setObjectName("RefreshButton")
+        discovery_ui_refresh_button.setStyleSheet(styles.color_style_sheet)
+        discovery_ui_refresh_button.clicked.connect(self.refresh_discovery_ui)
+        self.profile_methods_layout.addWidget(discovery_ui_refresh_button)
         self.profile_methods_layout.addStretch(1)
 
-    def build_a2dp_ui(self, device_address):
+    def unregister_bluetooth_agent(self):
+        """Unregister bluetooth pairing agent"""
+        self.log.info("Attempting to unregister the Bluetooth agent...")
+        try:
+            self.bluetooth_device_manager.unregister_agent()
+            QMessageBox.information(self, "Agent Unregistered", "Bluetooth agent was successfully unregistered.")
+        except Exception as error:
+            self.log.error("Failed to unregister agent: %s", error)
+            QMessageBox.critical(self, "Unregistration Failed", f"Could not unregister agent.\n{str(error)}")
+
+    def create_a2dp_profile_ui(self, device_address):
         """Builds a single A2DP panel combining source streaming and sink media control, based on the device's A2DP roles."""
         bold_font = QFont("Segoe UI", 10, QFont.Weight.Bold)
         layout = QVBoxLayout()
@@ -413,18 +417,18 @@ class TestApplication(QWidget):
             audio_layout.addWidget(self.audio_location_input)
             self.browse_audio_button = QPushButton("Browse... ")
             self.browse_audio_button.setStyleSheet(styles.bluetooth_profiles_button_style)
-            self.browse_audio_button.clicked.connect(self.browse_audio_file)
+            self.browse_audio_button.clicked.connect(self.select_audio_file)
             audio_layout.addWidget(self.browse_audio_button)
             streaming_layout.addLayout(audio_layout)
             streaming_buttons_layout = QHBoxLayout()
             streaming_buttons_layout.setSpacing(12)
             self.start_streaming_button = QPushButton("Start Streaming")
             self.start_streaming_button.setStyleSheet(styles.bluetooth_profiles_button_style)
-            self.start_streaming_button.clicked.connect(self.start_streaming)
+            self.start_streaming_button.clicked.connect(self.start_a2dp_streaming)
             streaming_buttons_layout.addWidget(self.start_streaming_button)
             self.stop_streaming_button = QPushButton("Stop Streaming")
             self.stop_streaming_button.setStyleSheet(styles.bluetooth_profiles_button_style)
-            self.stop_streaming_button.clicked.connect(self.stop_streaming)
+            self.stop_streaming_button.clicked.connect(self.stop_a2dp_streaming)
             self.stop_streaming_button.setEnabled(False)
             streaming_buttons_layout.addWidget(self.stop_streaming_button)
             streaming_layout.addLayout(streaming_buttons_layout)
@@ -442,27 +446,27 @@ class TestApplication(QWidget):
             self.play_button = QPushButton("Play")
             self.play_button.setFont(bold_font)
             self.play_button.setStyleSheet(styles.bluetooth_profiles_button_style)
-            self.play_button.clicked.connect(lambda: self.media_control("play"))
+            self.play_button.clicked.connect(lambda: self.send_media_control_command("play"))
             control_buttons.addWidget(self.play_button)
             self.pause_button = QPushButton("Pause")
             self.pause_button.setFont(bold_font)
             self.pause_button.setStyleSheet(styles.bluetooth_profiles_button_style)
-            self.pause_button.clicked.connect(lambda: self.media_control("pause"))
+            self.pause_button.clicked.connect(lambda: self.send_media_control_command("pause"))
             control_buttons.addWidget(self.pause_button)
             self.next_button = QPushButton("Next")
             self.next_button.setFont(bold_font)
             self.next_button.setStyleSheet(styles.bluetooth_profiles_button_style)
-            self.next_button.clicked.connect(lambda: self.media_control("next"))
+            self.next_button.clicked.connect(lambda: self.send_media_control_command("next"))
             control_buttons.addWidget(self.next_button)
             self.previous_button = QPushButton("Previous")
             self.previous_button.setFont(bold_font)
             self.previous_button.setStyleSheet(styles.bluetooth_profiles_button_style)
-            self.previous_button.clicked.connect(lambda: self.media_control("previous"))
+            self.previous_button.clicked.connect(lambda: self.send_media_control_command("previous"))
             control_buttons.addWidget(self.previous_button)
             self.rewind_button = QPushButton("Rewind")
             self.rewind_button.setFont(bold_font)
             self.rewind_button.setStyleSheet(styles.bluetooth_profiles_button_style)
-            self.rewind_button.clicked.connect(lambda: self.media_control("rewind"))
+            self.rewind_button.clicked.connect(lambda: self.send_media_control_command("rewind"))
             control_buttons.addWidget(self.rewind_button)
             media_control_layout.addLayout(control_buttons)
             media_control_group.setLayout(media_control_layout)
@@ -472,7 +476,7 @@ class TestApplication(QWidget):
         widget.setLayout(layout)
         return widget
 
-    def build_opp_tab(self, device_address):
+    def create_opp_profile_ui(self, device_address):
         """Builds and returns the OPP (Object Push Profile) panel for Bluetooth file transfer."""
         bold_font = QFont("Segoe UI", 10, QFont.Weight.Bold)
         layout = QVBoxLayout()
@@ -510,19 +514,19 @@ class TestApplication(QWidget):
         self.browse_opp_button = QPushButton("Browse")
         self.browse_opp_button.setFont(bold_font)
         self.browse_opp_button.setStyleSheet(styles.bluetooth_profiles_button_style)
-        self.browse_opp_button.clicked.connect(self.browse_opp_file)
+        self.browse_opp_button.clicked.connect(self.select_opp_file)
         file_selection_layout.addWidget(self.browse_opp_button)
         opp_layout.addLayout(file_selection_layout)
         button_layout = QHBoxLayout()
         self.send_file_button = QPushButton("Send File")
         self.send_file_button.setFont(bold_font)
         self.send_file_button.setStyleSheet(styles.bluetooth_profiles_button_style)
-        self.send_file_button.clicked.connect(self.send_file)
+        self.send_file_button.clicked.connect(self.send_file_via_opp)
         button_layout.addWidget(self.send_file_button)
         self.receive_file_button = QPushButton("Receive File")
         self.receive_file_button.setFont(bold_font)
         self.receive_file_button.setStyleSheet(styles.bluetooth_profiles_button_style)
-        self.receive_file_button.clicked.connect(self.receive_file)
+        self.receive_file_button.clicked.connect(self.receive_file_via_opp)
         button_layout.addWidget(self.receive_file_button)
         opp_layout.addLayout(button_layout)
         opp_group.setLayout(opp_layout)
@@ -532,15 +536,16 @@ class TestApplication(QWidget):
         widget.setLayout(layout)
         return widget
 
-    def media_control(self, command):
+    def send_media_control_command(self, command):
         """Sends a media control command to the connected Bluetooth device.
 
         Args:
             command: The media control command to send (e.g., "play", "pause", "next", "previous").
         """
         self.bluetooth_device_manager.media_control(command, address=self.device_address_sink)
+        self.log.info("Media command %s sent to device %s.", command, self.device_address_sink)
 
-    def start_streaming(self):
+    def start_a2dp_streaming(self):
         """Start A2DP streaming to a selected Bluetooth sink device."""
         audio_path = self.audio_location_input.text().strip()
         if not audio_path or not os.path.exists(audio_path):
@@ -550,34 +555,42 @@ class TestApplication(QWidget):
         if not self.device_address_source:
             QMessageBox.warning(self, "No Device", "Please select a Bluetooth sink device to stream.")
             return
-        self.log.info("A2DP streaming started with file : %s", audio_path)
         self.start_streaming_button.setEnabled(False)
         self.stop_streaming_button.setEnabled(True)
         success = self.bluetooth_device_manager.start_a2dp_stream(self.device_address_source, audio_path)
-        if not success:
+        if success:
+            self.log.info("A2DP streaming successfully started with file: %s", audio_path)
+        else:
+            self.log.error("Failed to start A2DP streaming with file: %s", audio_path)
             QMessageBox.critical(self, "Streaming Failed", "Failed to start streaming.")
             self.start_streaming_button.setEnabled(True)
             self.stop_streaming_button.setEnabled(False)
 
-    def stop_streaming(self):
+    def stop_a2dp_streaming(self):
         """Stop active A2DP streaming session."""
-        self.log.info("A2DP streaming stopped")
+        try:
+            self.bluetooth_device_manager.stop_a2dp_stream()
+        except Exception as error:
+            self.log.error("Failed to stop A2DP streaming for device: %s. Error: %s", self.device_address_source, error)
+            QMessageBox.critical(self, "Stop Streaming Failed", "Failed to stop A2DP streaming.")
+            return
+        self.log.info("A2DP streaming stopped for device: %s", self.device_address_source)
         self.start_streaming_button.setEnabled(True)
         self.stop_streaming_button.setEnabled(False)
-        self.bluetooth_device_manager.stop_a2dp_stream()
 
-    def browse_audio_file(self):
+    def select_audio_file(self):
         """Open a file dialog for selecting an audio file."""
         file_dialog = QFileDialog()
         file_path, _ = file_dialog.getOpenFileName(caption="Select Audio File", filter="WAV files (*.wav)")
         if file_path:
             if os.path.exists(file_path) and file_path.lower().endswith('.wav'):
                 self.audio_location_input.setText(file_path)
+                self.log.info("Audio file selected.")
             else:
                 self.log.warning(f"Selected file is invalid or not a WAV file: {file_path}")
                 QMessageBox.warning(self, "Invalid File", "The selected file does not exist or is not a valid WAV file.")
 
-    def browse_opp_file(self):
+    def select_opp_file(self):
         """Open a file dialog to select a file to send via OPP."""
         file_dialog = QFileDialog()
         file_path, _ = file_dialog.getOpenFileName(None, "Select File to Send via OPP", "", "All Files (*)")
@@ -587,8 +600,9 @@ class TestApplication(QWidget):
                 self.log.error("Selected OPP file does not exist: %s", file_path)
                 return
             self.opp_location_input.setText(file_path)
+            self.log.info("File selected to send via OPP")
 
-    def send_file(self):
+    def send_file_via_opp(self):
         """Send a selected file to a remote device using OPP."""
         file_path = self.opp_location_input.text()
         if not file_path or not self.device_address:
@@ -597,7 +611,7 @@ class TestApplication(QWidget):
         self.send_file_button.setEnabled(False)
         self.send_file_button.setText("Sending...")
         try:
-            status = self.bluetooth_device_manager.send_file(self.device_address, file_path)
+            status = self.bluetooth_device_manager.send_file_via_opp(self.device_address, file_path)
         except Exception as error:
             status = "error"
             self.log.info("UI error:%s", error)
@@ -612,10 +626,10 @@ class TestApplication(QWidget):
         else:
             QMessageBox.warning(None, "OPP", "File transfer failed or was rejected.")
 
-    def receive_file(self):
+    def receive_file_via_opp(self):
         """Start OPP receiver and handle file transfer."""
         try:
-            received_file_path = self.bluetooth_device_manager.receive_file(user_confirm_callback=self.user_confirm_file_transfer)
+            received_file_path = self.bluetooth_device_manager.receive_file_via_opp(user_confirm_callback=self.prompt_file_transfer_confirmation)
             if received_file_path:
                 QMessageBox.information(None, "File Received", f"File received successfully:\n{received_file_path}")
             else:
@@ -623,7 +637,7 @@ class TestApplication(QWidget):
         except Exception as error:
             QMessageBox.critical(None, "Error", f"An error occurred during file reception:\n{str(error)}")
 
-    def on_profile_tab_changed(self, index):
+    def handle_profile_tab_change(self, index):
         """Handles actions to perform when the user switches between profile tabs in the UI.
 
         Args:
@@ -635,7 +649,7 @@ class TestApplication(QWidget):
         if selected_tab == "A2DP" :
             self.clear_layout(self.a2dp_tab_placeholder)
             layout = QVBoxLayout()
-            a2dp_panel = self.build_a2dp_ui(self.device_address)
+            a2dp_panel = self.create_a2dp_profile_ui(self.device_address)
             self.log.info(self.device_address)
             layout.addWidget(a2dp_panel)
             self.a2dp_tab_placeholder.setLayout(layout)
@@ -643,16 +657,15 @@ class TestApplication(QWidget):
         elif selected_tab == "OPP":
             self.clear_layout(self.opp_tab_placeholder)
             layout = QVBoxLayout()
-            opp_tab = self.build_opp_tab(self.device_address)
+            opp_tab = self.create_opp_profile_ui(self.device_address)
             layout.addWidget(opp_tab)
             self.opp_tab_placeholder.setLayout(layout)
             self.opp_tab_placeholder.update()
 
-    def load_profile_tabs_for_device(self, device_address):
+    def load_device_profile_tabs(self, device_address):
         """Loads and displays profile-related UI tabs for a specific Bluetooth device."""
         bold_font = QFont()
         bold_font.setBold(True)
-        is_paired = self.bluetooth_device_manager.is_device_paired(device_address)
         is_connected = self.bluetooth_device_manager.is_device_connected(device_address)
         self.device_address = device_address
         if not is_connected:
@@ -662,7 +675,7 @@ class TestApplication(QWidget):
             warning_label.setStyleSheet(styles.color_style_sheet)
             self.clear_layout(self.profile_methods_layout)
             self.profile_methods_layout.addWidget(warning_label)
-            self.add_connection_controls(self.profile_methods_layout, device_address)
+            self.add_device_connection_controls(self.profile_methods_layout, device_address)
             return
         self.device_tab_widget = QTabWidget()
         self.device_tab_widget.setMaximumWidth(600)
@@ -674,13 +687,13 @@ class TestApplication(QWidget):
         self.opp_tab_placeholder.setMaximumWidth(600)
         self.device_tab_widget.addTab(self.a2dp_tab_placeholder, "A2DP")
         self.device_tab_widget.addTab(self.opp_tab_placeholder, "OPP")
-        self.device_tab_widget.currentChanged.connect(self.on_profile_tab_changed)
+        self.device_tab_widget.currentChanged.connect(self.handle_profile_tab_change)
         self.clear_layout(self.profile_methods_layout)
         self.profile_methods_layout.addWidget(self.device_tab_widget)
-        self.on_profile_tab_changed(self.device_tab_widget.currentIndex())
-        self.add_connection_controls(self.profile_methods_layout, device_address)
+        self.handle_profile_tab_change(self.device_tab_widget.currentIndex())
+        self.add_device_connection_controls(self.profile_methods_layout, device_address)
 
-    def add_connection_controls(self, layout, device_address):
+    def add_device_connection_controls(self, layout, device_address):
         """Adds Connect, Disconnect, and Unpair buttons to the provided layout for the specified device.
 
         Args:
@@ -697,25 +710,25 @@ class TestApplication(QWidget):
         self.connect_button.setStyleSheet(styles.bluetooth_profiles_button_style)
         self.connect_button.setFixedWidth(100)
         self.connect_button.setEnabled(not self.is_connected)
-        self.connect_button.clicked.connect(lambda:self.manage_device('connect', device_address, load_profiles=True))
+        self.connect_button.clicked.connect(lambda:self.perform_device_action('connect', device_address, load_profiles=True))
         button_layout.addWidget(self.connect_button)
         self.disconnect_button = QPushButton("Disconnect")
         self.disconnect_button.setFont(bold_font)
         self.disconnect_button.setStyleSheet(styles.bluetooth_profiles_button_style)
         self.disconnect_button.setFixedWidth(100)
         self.disconnect_button.setEnabled(self.is_connected)
-        self.disconnect_button.clicked.connect(lambda:self.manage_device('disconnect', device_address, load_profiles=True))
+        self.disconnect_button.clicked.connect(lambda:self.perform_device_action('disconnect', device_address, load_profiles=True))
         button_layout.addWidget(self.disconnect_button)
         self.unpair_button = QPushButton("Unpair")
         self.unpair_button.setFont(bold_font)
         self.unpair_button.setStyleSheet(styles.bluetooth_profiles_button_style)
         self.unpair_button.setFixedWidth(100)
         self.unpair_button.setEnabled(True)
-        self.unpair_button.clicked.connect(lambda:self.manage_device('unpair', device_address, load_profiles=True))
+        self.unpair_button.clicked.connect(lambda:self.perform_device_action('unpair', device_address, load_profiles=True))
         button_layout.addWidget(self.unpair_button)
         layout.addLayout(button_layout)
 
-    def manage_device(self, action, device_address, load_profiles):
+    def perform_device_action(self, action, device_address, load_profiles):
         """Performs a Bluetooth device action and updates the UI.
 
         Args:
@@ -726,12 +739,12 @@ class TestApplication(QWidget):
             self.log.info("Attempting to pair with %s", device_address)
             if self.bluetooth_device_manager.is_device_paired(device_address):
                 QMessageBox.information(self, "Already Paired", f"{device_address} is already paired.")
-                self.add_device(device_address)
+                self.add_paired_device_to_list(device_address)
                 return
             success = self.bluetooth_device_manager.pair(device_address)
             if success:
                 QMessageBox.information(self, "Pairing Successful", f"{device_address} was paired.")
-                self.add_device(device_address)
+                self.add_paired_device_to_list(device_address)
             else:
                 QMessageBox.critical(self, "Pairing Failed", f"Pairing with {device_address} failed.")
         elif action == 'connect':
@@ -740,7 +753,7 @@ class TestApplication(QWidget):
                 QMessageBox.information(self, "Connection Successful", f"{device_address} was connected.")
                 self.log.info("%s connected successfully", device_address)
                 if load_profiles:
-                    self.load_profile_tabs_for_device(device_address)
+                    self.load_device_profile_tabs(device_address)
             else:
                 QMessageBox.warning(self, "Connection Failed", f"Failed to connect to {device_address}")
         elif action == 'disconnect':
@@ -750,7 +763,7 @@ class TestApplication(QWidget):
                 self.log.info("Disconnected from %s", device_address)
             else:
                 QMessageBox.warning(self, "Disconnection Failed", f"Could not disconnect from {device_address}")
-            self.load_profile_tabs_for_device(device_address)
+            self.load_device_profile_tabs(device_address)
         elif action == 'unpair':
             success = self.bluetooth_device_manager.unpair_device(device_address)
             if success:
@@ -758,57 +771,35 @@ class TestApplication(QWidget):
                 self.log.info("Unpaired %s", device_address)
             else:
                 QMessageBox.warning(self, "Unpair Failed", f"Could not unpair {device_address}")
-            self.remove_unpaired_device(device_address)
+            self.remove_device_from_list(device_address)
             if self.profiles_list_widget.count() == 1:
-                self.profiles_list_widget.itemSelectionChanged.connect(self.profile_selected)
+                self.profiles_list_widget.itemSelectionChanged.connect(self.handle_profile_selection)
             else:
-                self.load_profile_tabs_for_device(device_address)
+                self.load_device_profile_tabs(device_address)
         else:
             self.log.error("Unknown action:%s", action)
 
-    def remove_unpaired_device(self, unpaired_address):
+
+    def remove_device_from_list(self, unpaired_device_address):
         """Removes a specific unpaired device from the profiles list (if present)."""
         for i in range(self.profiles_list_widget.count()):
             item_text = self.profiles_list_widget.item(i).text().strip()
-            if item_text == unpaired_address:
+            if item_text == unpaired_device_address:
                 self.profiles_list_widget.takeItem(i)
                 break
 
-    def handle_pairing_request(self, req_type, device, parameter=None):
-        """Handle incoming pairing requests from BlueZ via Agent."""
-        device_address = device.split("dev_")[-1].replace("_", ":")
-        if req_type == "pin":
-            pin, ok = QInputDialog.getText(self, "Pairing Request", f"Enter PIN for device {device_address}:")
-            if ok:
-                return pin
-            raise dbus.exceptions.DBusException("org.bluez.Error.Rejected")
-        elif req_type == "passkey":
-            passkey, ok = QInputDialog.getInt(self, "Pairing Request", f"Enter Passkey for device {device_address}:")
-            if ok:
-                return passkey
-            raise dbus.exceptions.DBusException("org.bluez.Error.Rejected")
-        elif req_type == "confirm":
-            reply = QMessageBox.question(self, "Confirm Pairing",f"Device {device_address} requests to pair with passkey: {parameter}\nAccept?", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-            if reply == QMessageBox.StandardButton.Yes:
-                return
-            raise dbus.exceptions.DBusException("org.bluez.Error.Rejected")
-        elif req_type == "authorize":
-            reply = QMessageBox.question(self, "Authorize Service", f"Device {device_address} wants to use service {parameter}\nAllow?",QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-            if reply == QMessageBox.StandardButton.Yes:
-                return
-            raise dbus.exceptions.DBusException("org.bluez.Error.Rejected")
-
-    def register_agent_clicked(self):
-        selected_capability = self.capability_combobox.currentText()
-        self.log.info("Registering agent with capability:%s", selected_capability)
+    def register_bluetooth_agent(self):
+        """Register bluetooth pairing agent"""
+        self.selected_capability = self.capability_combobox.currentText()
+        self.log.info("Attempting to register agent with capability:%s", self.selected_capability)
         try:
-            self.bluetooth_device_manager.register_agent(capability=selected_capability, ui_callback=self.handle_pairing_request)
-            QMessageBox.information(self, "Agent Registered", f"Agent registered with capability: {selected_capability}")
+            self.bluetooth_device_manager.register_agent(capability=self.selected_capability, ui_callback = self.handle_pairing_request_from_remote_device)
+            QMessageBox.information(self, "Agent Registered", f"Agent registered with capability: {self.selected_capability}")
         except Exception as error:
             self.log.info("Failed to register agent:%s", error)
             QMessageBox.critical(self, "Registration Failed", f"Could not register agent.\n{error}")
 
-    def test_application_clicked(self):
+    def initialize_host_ui(self):
         """Create and display the main testing application GUI."""
         self.main_grid_layout = QGridLayout()
         bold_font = QFont()
@@ -819,14 +810,14 @@ class TestApplication(QWidget):
         self.gap_button.setStyleSheet(styles.gap_button_style_sheet)
         self.gap_button.setFixedWidth(350)
         self.gap_button.setMinimumHeight(30)
-        self.gap_button.clicked.connect(lambda:self.profile_selected("GAP "))
+        self.gap_button.clicked.connect(lambda:self.handle_profile_selection("GAP "))
         self.main_grid_layout.addWidget(self.gap_button, 0, 0, 1, 2)
         self.profiles_list_widget = QListWidget()
         self.profiles_list_widget.setFont(bold_font)
         self.profiles_list_widget.setContentsMargins(4, 4, 4, 4)
         self.profiles_list_widget.setStyleSheet(styles.profiles_list_style_sheet)
         self.profiles_list_widget.setFixedWidth(350)
-        self.profiles_list_widget.itemSelectionChanged.connect(lambda:self.profile_selected())
+        self.profiles_list_widget.itemSelectionChanged.connect(lambda:self.handle_profile_selection())
         paired_devices_label = QLabel("Paired Devices")
         paired_devices_label.setObjectName("PairedDevicesList")
         paired_devices_label.setFont(QFont("Arial", 11, QFont.Weight.Bold))
@@ -856,13 +847,13 @@ class TestApplication(QWidget):
         self.grid.setVerticalSpacing(12)
         self.grid.setColumnStretch(0, 1)
         self.grid.setColumnStretch(1, 2)
-        self.add_row(0, "Controller Name", details.get("Name", "N/A"))
-        self.add_row(1, "Controller Address", details.get("BD_ADDR", "N/A"))
-        self.add_row(2, "Link Mode", details.get("Link mode", "N/A"))
-        self.add_row(3, "Link Policy", details.get("Link policy", "N/A"))
-        self.add_row(4, "HCI Version", details.get("HCI Version", "N/A"))
-        self.add_row(5, "LMP Version", details.get("LMP Version", "N/A"))
-        self.add_row(6, "Manufacturer", details.get("Manufacturer", "N/A"))
+        self.add_controller_details_row(0, "Controller Name", details.get("Name", "N/A"))
+        self.add_controller_details_row(1, "Controller Address", details.get("BD_ADDR", "N/A"))
+        self.add_controller_details_row(2, "Link Mode", details.get("Link mode", "N/A"))
+        self.add_controller_details_row(3, "Link Policy", details.get("Link policy", "N/A"))
+        self.add_controller_details_row(4, "HCI Version", details.get("HCI Version", "N/A"))
+        self.add_controller_details_row(5, "LMP Version", details.get("LMP Version", "N/A"))
+        self.add_controller_details_row(6, "Manufacturer", details.get("Manufacturer", "N/A"))
         controller_layout.addLayout(self.grid)
         self.main_grid_layout.addWidget(controller_details_widget, 5, 0, 8, 2)
         # Grid2: Profile description
@@ -897,9 +888,9 @@ class TestApplication(QWidget):
         self.main_grid_layout.setColumnStretch(1, 0)
         self.main_grid_layout.setColumnStretch(2, 1)
         self.setLayout(self.main_grid_layout)
-        self.populate_device_list()
+        self.load_paired_devices()
 
-    def user_confirm_file_transfer(self, file_path):
+    def prompt_file_transfer_confirmation(self, file_path):
         """Prompt user to confirm a file transfer and return their decision."""
         file_name = os.path.basename(file_path)
         msg_box = QMessageBox()
@@ -909,3 +900,60 @@ class TestApplication(QWidget):
         msg_box.setIcon(QMessageBox.Icon.Question)
         result = msg_box.exec()
         return result == QMessageBox.StandardButton.Yes
+
+    def handle_pairing_request_from_remote_device(self, req_type, device, parameter=None):
+        device_address = device.split("dev_")[-1].replace("_", ":")
+
+        if self.selected_capability =="NoInputNoOutput":
+            pairing_status = self.bluetooth_device_manager.is_device_paired(device_address)
+            if pairing_status:
+                self.add_paired_device_to_list(device_address)
+                self.log.info("Pairing successful with %s", device_address)
+            else:
+                self.log.info("Pairing failed with %s", device_address)
+
+        elif req_type == "pin":
+            pin, accept = QInputDialog.getText(self, "Pairing Request", f"Enter PIN for device {device_address}:")
+            if accept and pin:
+                return pin
+
+        elif req_type == "passkey":
+            passkey, accept = QInputDialog.getInt(self, "Pairing Request", f"Enter passkey for device {device_address}:")
+            if accept:
+                self.add_paired_device_to_list(device_address)
+                return passkey
+
+        elif req_type == "confirm":
+            reply = QMessageBox.question(
+                self,
+                "Confirm Pairing",
+                f"Device {device_address} requests to pair with passkey: {parameter}\nAccept?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            if reply == QMessageBox.StandardButton.Yes:
+                self.add_paired_device_to_list(device_address)
+                return True
+
+        elif req_type == "authorize":
+            reply = QMessageBox.question(self, "Authorize Service",
+                                         f"Device {device_address} wants to use service {parameter}\nAllow?",
+                                         QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+            if reply == QMessageBox.StandardButton.Yes:
+                return True
+            elif reply == QMessageBox.StandardButton.No:
+                self.bluetooth_device_manager.disconnect(device_address)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
