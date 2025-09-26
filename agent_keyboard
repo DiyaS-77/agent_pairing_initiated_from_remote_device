@@ -1,0 +1,92 @@
+    def handle_pairing_request_from_remote_device(self, req_type, device, parameter=None):
+        device_address = device.split("dev_")[-1].replace("_", ":")
+
+        if self.selected_capability =="NoInputNoOutput":
+            pairing_status = self.bluetooth_device_manager.is_device_paired(device_address)
+            if pairing_status:
+                self.add_paired_device_to_list(device_address)
+                self.log.info("Pairing successful with %s", device_address)
+            else:
+                self.log.info("Pairing failed with %s", device_address)
+        elif self.selected_capability=="KeyboardOnly" or req_type == "pin":
+            pin, accept = QInputDialog.getText(self, "Pairing Request", f"Enter PIN for device {device_address}:")
+            if accept and pin:
+                return pin
+            return None
+
+        elif self.selected_capability=="KeyboardOnly" or   req_type == "passkey":
+            passkey, accept = QInputDialog.getInt(self, "Pairing Request", f"Enter passkey for device {device_address}:")
+            if accept:
+                return passkey
+            return None
+
+        elif req_type == "confirm":
+            reply = QMessageBox.question(
+                self,
+                "Confirm Pairing",
+                f"Device {device_address} requests to pair with passkey: {parameter}\nAccept?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            if reply == QMessageBox.StandardButton.Yes:
+                self.add_paired_device_to_list(device_address)
+                return True
+            return None
+
+        elif req_type == "authorize":
+            reply = QMessageBox.question(self, "Authorize Service",
+                                         f"Device {device_address} wants to use service {parameter}\nAllow?",
+                                         QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+            if reply == QMessageBox.StandardButton.Yes:
+                return True
+            elif reply == QMessageBox.StandardButton.No:
+                self.bluetooth_device_manager.disconnect(device_address)
+            return None
+
+
+
+
+
+agent.py file-----------
+import dbus.service
+
+from libraries.bluetooth import constants
+
+
+class Agent(dbus.service.Object):
+    def __init__(self, bus, path, ui_callback, log, capability):
+        super().__init__(bus, path)
+        self.ui_callback = ui_callback
+        self.log = log
+        self.capability= capability
+
+    @dbus.service.method(constants.agent, in_signature="o", out_signature="s")
+    def RequestPinCode(self, device):
+        pin = self.ui_callback("pin", device)
+        if not pin:
+            raise dbus.DBusException("org.bluez.Error.Rejected", "User cancelled PIN input")
+        return str(pin)
+
+    @dbus.service.method(constants.agent, in_signature="o", out_signature="u")
+    def RequestPassKey(self, device):
+        passkey = self.ui_callback("passkey", device)
+        if passkey is None:
+            raise dbus.DBusException("org.bluez.Error.Rejected", "User cancelled passkey input")
+        return int(passkey)
+
+    @dbus.service.method(constants.agent, in_signature="ou")
+    def RequestConfirmation(self, device, passkey):
+        result = self.ui_callback("confirm", device, passkey)
+        if result is None:
+            raise dbus.DBusException("org.bluez.Error.Rejected", "User rejected confirmation request")
+        return
+
+    @dbus.service.method(constants.agent, in_signature="os")
+    def AuthorizeService(self, device, uuid):
+        allow = self.ui_callback("authorize", device, uuid)
+        if allow is None:
+            raise dbus.DBusException("org.bluez.Error.Rejected", "User rejected the connection")
+        return
+
+    @dbus.service.method(constants.agent)
+    def Cancel(self):
+        self.log.info("Pairing or Connection Cancelled by remote device")
