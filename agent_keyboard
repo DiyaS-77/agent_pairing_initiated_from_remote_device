@@ -1,4 +1,43 @@
-    def handle_pairing_request_from_remote_device(self, req_type, device, parameter=None):
+bluetoothd[26102]: src/device.c:device_new() Creating device /org/bluez/hci0/dev_5C_F3_70_94_25_92
+bluetoothd[26102]: src/device.c:device_set_class() /org/bluez/hci0/dev_5C_F3_70_94_25_92 0x280104
+bluetoothd[26102]: src/shared/mgmt.c:can_read_data() [0x0000] event 0x0010
+bluetoothd[26102]: src/adapter.c:user_passkey_request_callback() hci0 5C:F3:70:94:25:92
+bluetoothd[26102]: src/device.c:new_auth() Requesting agent authentication for 5C:F3:70:94:25:92
+bluetoothd[26102]: src/agent.c:agent_ref() 0x55e3986fb7e0: ref=2
+bluetoothd[26102]: src/agent.c:agent_request_passkey() Calling Agent.RequestPasskey: name=:1.0, path=/test/agent
+bluetoothd[26102]: src/agent.c:passkey_reply() Agent replied with an error: org.freedesktop.DBus.Error.UnknownMethod, Traceback (most recent call last):
+  File "/usr/lib/python3/dist-packages/dbus/service.py", line 658, in _message_cb
+    (candidate_method, parent_method) = _method_lookup(self, method_name, interface_name)
+  File "/usr/lib/python3/dist-packages/dbus/service.py", line 248, in _method_lookup
+    raise UnknownMethodException('%s is not a valid method of interface %s' % (method_name, dbus_interface))
+dbus.exceptions.UnknownMethodException: org.freedesktop.DBus.Error.UnknownMethod: Unknown method: RequestPasskey is not a valid method of interface org.bluez.Agent1
+bluetoothd[26102]: src/adapter.c:btd_adapter_passkey_reply() hci0 addr 5C:F3:70:94:25:92 passkey 4294967295
+bluetoothd[26102]: src/agent.c:agent_unref() 0x55e3986fb7e0: ref=1
+bluetoothd[26102]: src/shared/mgmt.c:send_request() [0x0000] command 0x001f
+bluetoothd[26102]: src/shared/mgmt.c:can_read_data() [0x0000] command 0x001f complete: 0x00
+bluetoothd[26102]: src/shared/mgmt.c:can_read_data() [0x0000] event 0x0011
+bluetoothd[26102]: src/adapter.c:bonding_attempt_complete() hci0 bdaddr 5C:F3:70:94:25:92 type 0 status 0x5
+bluetoothd[26102]: src/device.c:device_bonding_complete() bonding (nil) status 0x05
+bluetoothd[26102]: src/device.c:device_cancel_authentication() Canceling authentication request for 5C:F3:70:94:25:92
+bluetoothd[26102]: src/device.c:device_bonding_failed() status 5
+bluetoothd[26102]: src/adapter.c:resume_discovery() 
+bluetoothd[26102]: src/shared/mgmt.c:can_read_data() [0x0000] event 0x000c
+bluetoothd[26102]: src/adapter.c:dev_disconnected() Device 5C:F3:70:94:25:92 disconnected, reason 3
+bluetoothd[26102]: src/adapter.c:adapter_remove_connection() 
+bluetoothd[26102]: plugins/policy.c:disconnect_cb() reason 3
+bluetoothd[26102]: src/adapter.c:bonding_attempt_complete() hci0 bdaddr 5C:F3:70:94:25:92 type 0 status 0xe
+bluetoothd[26102]: src/device.c:device_bonding_complete() bonding (nil) status 0x0e
+bluetoothd[26102]: src/device.c:device_bonding_failed() status 14
+bluetoothd[26102]: src/adapter.c:resume_discovery() 
+bluetoothd[26102]: src/device.c:device_remove() Removing device /org/bluez/hci0/dev_5C_F3_70_94_25_92
+bluetoothd[26102]: src/device.c:btd_device_unref() Freeing device /org/bluez/hci0/dev_5C_F3_70_94_25_92
+bluetoothd[26102]: src/device.c:device_free() 0x55e398703a60
+
+
+
+
+
+def handle_pairing_request_from_remote_device(self, req_type, device, parameter=None):
         device_address = device.split("dev_")[-1].replace("_", ":")
 
         if self.selected_capability =="NoInputNoOutput":
