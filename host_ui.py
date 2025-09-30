@@ -1,5 +1,6 @@
 import os
 import re
+import time
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtCore import QTimer
@@ -352,14 +353,12 @@ class TestApplication(QWidget):
         self.profile_methods_layout.addWidget(capability_label)
         self.profile_methods_layout.addWidget(self.capability_combobox)
         self.profile_methods_layout.addWidget(register_agent_button)
-        #Unregister agent button
         unregister_agent_button = QPushButton("Unregister Agent")
         unregister_agent_button.setObjectName("UnregisterAgent")
         unregister_agent_button.setFont(bold_font)
         unregister_agent_button.setStyleSheet(styles.color_style_sheet)
         unregister_agent_button.clicked.connect(self.unregister_bluetooth_agent)
         self.profile_methods_layout.addWidget(unregister_agent_button)
-
         discovery_ui_refresh_button = QPushButton("REFRESH")
         discovery_ui_refresh_button.setObjectName("RefreshButton")
         discovery_ui_refresh_button.setStyleSheet(styles.color_style_sheet)
@@ -375,7 +374,7 @@ class TestApplication(QWidget):
             QMessageBox.information(self, "Agent Unregistered", "Bluetooth agent was successfully unregistered.")
         except Exception as error:
             self.log.error("Failed to unregister agent: %s", error)
-            QMessageBox.critical(self, "Unregistration Failed", f"Could not unregister agent.\n{str(error)}")
+            QMessageBox.critical(self, "Unregistration Failed", f"Could not unregister agent.")
 
     def create_a2dp_profile_ui(self, device_address):
         """Builds a single A2DP panel combining source streaming and sink media control, based on the device's A2DP roles."""
@@ -521,12 +520,12 @@ class TestApplication(QWidget):
         self.send_file_button = QPushButton("Send File")
         self.send_file_button.setFont(bold_font)
         self.send_file_button.setStyleSheet(styles.bluetooth_profiles_button_style)
-        self.send_file_button.clicked.connect(self.send_file_via_opp)
+        self.send_file_button.clicked.connect(self.send_file)
         button_layout.addWidget(self.send_file_button)
         self.receive_file_button = QPushButton("Receive File")
         self.receive_file_button.setFont(bold_font)
         self.receive_file_button.setStyleSheet(styles.bluetooth_profiles_button_style)
-        self.receive_file_button.clicked.connect(self.receive_file_via_opp)
+        self.receive_file_button.clicked.connect(self.receive_file)
         button_layout.addWidget(self.receive_file_button)
         opp_layout.addLayout(button_layout)
         opp_group.setLayout(opp_layout)
@@ -602,7 +601,7 @@ class TestApplication(QWidget):
             self.opp_location_input.setText(file_path)
             self.log.info("File selected to send via OPP")
 
-    def send_file_via_opp(self):
+    def send_file(self):
         """Send a selected file to a remote device using OPP."""
         file_path = self.opp_location_input.text()
         if not file_path or not self.device_address:
@@ -611,7 +610,7 @@ class TestApplication(QWidget):
         self.send_file_button.setEnabled(False)
         self.send_file_button.setText("Sending...")
         try:
-            status = self.bluetooth_device_manager.send_file_via_opp(self.device_address, file_path)
+            status = self.bluetooth_device_manager.send_file(self.device_address, file_path)
         except Exception as error:
             status = "error"
             self.log.info("UI error:%s", error)
@@ -626,10 +625,10 @@ class TestApplication(QWidget):
         else:
             QMessageBox.warning(None, "OPP", "File transfer failed or was rejected.")
 
-    def receive_file_via_opp(self):
+    def receive_file(self):
         """Start OPP receiver and handle file transfer."""
         try:
-            received_file_path = self.bluetooth_device_manager.receive_file_via_opp(user_confirm_callback=self.prompt_file_transfer_confirmation)
+            received_file_path = self.bluetooth_device_manager.receive_file(user_confirm_callback=self.prompt_file_transfer_confirmation)
             if received_file_path:
                 QMessageBox.information(None, "File Received", f"File received successfully:\n{received_file_path}")
             else:
@@ -746,6 +745,7 @@ class TestApplication(QWidget):
                 QMessageBox.information(self, "Pairing Successful", f"{device_address} was paired.")
                 self.add_paired_device_to_list(device_address)
             else:
+                time.sleep(10)
                 QMessageBox.critical(self, "Pairing Failed", f"Pairing with {device_address} failed.")
         elif action == 'connect':
             success = self.bluetooth_device_manager.connect(device_address)
@@ -817,7 +817,7 @@ class TestApplication(QWidget):
         self.profiles_list_widget.setContentsMargins(4, 4, 4, 4)
         self.profiles_list_widget.setStyleSheet(styles.profiles_list_style_sheet)
         self.profiles_list_widget.setFixedWidth(350)
-        self.profiles_list_widget.itemSelectionChanged.connect(lambda:self.handle_profile_selection())
+        self.profiles_list_widget.itemClicked.connect(lambda:self.handle_profile_selection())
         paired_devices_label = QLabel("Paired Devices")
         paired_devices_label.setObjectName("PairedDevicesList")
         paired_devices_label.setFont(QFont("Arial", 11, QFont.Weight.Bold))
@@ -901,10 +901,12 @@ class TestApplication(QWidget):
         result = msg_box.exec()
         return result == QMessageBox.StandardButton.Yes
 
-    def handle_pairing_request_from_remote_device(self, req_type, device, parameter=None):
-        device_address = device.split("dev_")[-1].replace("_", ":")
 
-        if self.selected_capability =="NoInputNoOutput":
+    def handle_pairing_request_from_remote_device(self, request_type, device, uuid=None):
+        """Handle incoming pairing requests from remote devices."""
+        self.log.info(f"Handling pairing request: {request_type} for {device}")
+        device_address = device.split("dev_")[-1].replace("_", ":")
+        if self.selected_capability == "NoInputNoOutput":
             pairing_status = self.bluetooth_device_manager.is_device_paired(device_address)
             if pairing_status:
                 self.add_paired_device_to_list(device_address)
@@ -912,39 +914,56 @@ class TestApplication(QWidget):
             else:
                 self.log.info("Pairing failed with %s", device_address)
 
-        elif req_type == "pin":
+        elif request_type == "pin":
             pin, accept = QInputDialog.getText(self, "Pairing Request", f"Enter PIN for device {device_address}:")
             if accept and pin:
                 return pin
+            else:
+                self.log.info("User cancelled or provided no PIN for device %s", device_address)
 
-        elif req_type == "passkey":
+        elif request_type == "passkey":
             passkey, accept = QInputDialog.getInt(self, "Pairing Request", f"Enter passkey for device {device_address}:")
             if accept:
                 self.add_paired_device_to_list(device_address)
                 return passkey
+            else:
+                self.log.info("User cancelled passkey input for device %s", device_address)
 
-        elif req_type == "confirm":
-            reply = QMessageBox.question(
-                self,
-                "Confirm Pairing",
-                f"Device {device_address} requests to pair with passkey: {parameter}\nAccept?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-            )
-            if reply == QMessageBox.StandardButton.Yes:
-                self.add_paired_device_to_list(device_address)
-                return True
+        elif request_type == "confirm":
+            QTimer.singleShot(0, lambda: self.show_confirmation_dialog(device_address, uuid))
+            return
 
-        elif req_type == "authorize":
+        elif request_type == "authorize":
             reply = QMessageBox.question(self, "Authorize Service",
-                                         f"Device {device_address} wants to use service {parameter}\nAllow?",
-                                         QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+                f"Device {device_address} wants to use service {uuid}\nAllow?", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
             if reply == QMessageBox.StandardButton.Yes:
                 return True
             elif reply == QMessageBox.StandardButton.No:
+                self.log.warning("User denied service authorization for device %s", device_address)
                 self.bluetooth_device_manager.disconnect(device_address)
 
+        elif request_type == "display_pin":
+            QMessageBox.information(self, "Display PIN", f"Enter this PIN on {device_address}: {uuid}")
 
+        elif request_type == "display_passkey":
+            QMessageBox.information(self, "Display Passkey", f"Enter this passkey on {device_address}: {uuid}")
 
+    def show_confirmation_dialog(self, device_address, passkey):
+        msg_box = QMessageBox(self)
+        msg_box.setWindowTitle("Confirm Pairing")
+        msg_box.setText(f"Device {device_address} requests to pair with passkey: {passkey}\nAccept?")
+        msg_box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+        msg_box.setIcon(QMessageBox.Question)
+
+        def on_response(button):
+            if msg_box.standardButton(button) == QMessageBox.Yes:
+                self.add_device(device_address)
+                self.log.info("User accepted pairing confirmation")
+            else:
+                self.log.info("User rejected pairing confirmation")
+
+        msg_box.buttonClicked.connect(on_response)
+        msg_box.show()
 
 
 

@@ -109,27 +109,36 @@ class BluetoothDeviceManager:
                     if properties.get("Address") == address:
                         return path
                     else:
-                        self.log.warning("Device path not found")
+                        pass
 
-    def register_agent(self, capability=None, ui_callback=None):
+    '''def register_agent(self, capability=None, ui_callback=None):
         """Register this object as a Bluetooth pairing agent."""
         try:
-            self.agent=Agent(self.bus, constants.agent_path, ui_callback, self.log, capability)
+            self.agent=Agent(self.bus, constants.agent_path, ui_callback, self.log)
             agent_manager = dbus.Interface(self.bus.get_object(constants.bluez_service, constants.bluez_path), constants.agent_interface)
             agent_manager.RegisterAgent(constants.agent_path, capability)
             agent_manager.RequestDefaultAgent(constants.agent_path)
             self.log.info("Registered with capability:%s", capability)
         except dbus.exceptions.DBusException as error:
-            self.log.error("Failed to register agent: %s", error)
+            self.log.error("Failed to register agent:%s", error)
+            return False'''
+
+    def register_agent(self, capability="DisplayYesNo", ui_callback=None):
+        """Register this object as a Bluetooth pairing agent."""
+        try:
+            self.agent=Agent(self.bus, constants.agent_path, ui_callback, self.log)
+            agent_manager = dbus.Interface(self.bus.get_object(constants.bluez_service, constants.bluez_path), constants.agent_interface)
+            agent_manager.RegisterAgent(constants.agent_path, capability)
+            agent_manager.RequestDefaultAgent(constants.agent_path)
+            self.log.info("Registered with capability:%s", capability)
+        except dbus.exceptions.DBusException as error:
+            self.log.error("Failed to register agent:%s", error)
             return False
 
     def unregister_agent(self):
         """Unregister the Bluetooth pairing agent and remove D-Bus object."""
         try:
-            agent_manager = dbus.Interface(
-                self.bus.get_object(constants.bluez_service, constants.bluez_path),
-                constants.agent_interface
-            )
+            agent_manager = dbus.Interface(self.bus.get_object(constants.bluez_service, constants.bluez_path), constants.agent_interface)
             agent_manager.UnregisterAgent(constants.agent_path)
             self.log.info("Unregistered agent from BlueZ.")
             if hasattr(self, "agent") and self.agent:
@@ -151,7 +160,7 @@ class BluetoothDeviceManager:
         """
         device_path = self.find_device_path(address)
         if not device_path:
-            self.log.info("Device path not found for %s on %s", address, self.interface)
+            # self.log.info("Device path not found for %s on %s", address, self.interface)
             return False
         try:
             device_proxy = self.bus.get_object(constants.bluez_service, device_path)
@@ -402,7 +411,7 @@ class BluetoothDeviceManager:
                         else:
                             self.log.warning("Unknown A2DP role %s", device_address)
 
-    def send_file_via_opp(self, device_address, file_path, session_path=None):
+    def send_file(self, device_address, file_path, session_path=None):
         """Send a file via OBEX OPP and wait for real-time transfer status."""
         if not os.path.exists(file_path):
             self.log.info("File does not exist: %s", file_path)
@@ -430,7 +439,7 @@ class BluetoothDeviceManager:
             self.log.info("OBEX send failed: %s", error)
             return "error"
 
-    def receive_file_via_opp(self, save_directory="/tmp", timeout=20, user_confirm_callback=None):
+    def receive_file(self, save_directory="/tmp", timeout=20, user_confirm_callback=None):
         """Start an OBEX Object Push server and wait for a file to be received."""
         try:
             if not os.path.exists(save_directory):
