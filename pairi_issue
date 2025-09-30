@@ -1,68 +1,27 @@
-from PyQt6.QtCore import QObject, pyqtSignal, QEventLoop
-import dbus
-import dbus.service
-
-class AgentSignalBridge(QObject):
-    pairing_request = pyqtSignal(str, str, object)  # req_type, device, parameter
-    pairing_response = pyqtSignal(object)           # response value
-
-agent_signals = AgentSignalBridge()
-
-class Agent(dbus.service.Object):
-    def __init__(self, bus, path):
-        super().__init__(bus, path)
-        self.response_loop = None
-        self.response_value = None
-        agent_signals.pairing_response.connect(self.receive_response)
-
-    def receive_response(self, value):
-        self.response_value = value
-        if self.response_loop:
-            self.response_loop.quit()
-
-    def wait_for_response(self, req_type, device, parameter=None):
-        agent_signals.pairing_request.emit(req_type, device, parameter)
-        self.response_loop = QEventLoop()
-        self.response_loop.exec()
-        return self.response_value
-
-    @dbus.service.method("org.bluez.Agent1", in_signature="o", out_signature="s")
-    def RequestPinCode(self, device):
-        return self.wait_for_response("pin", device)
-
-    @dbus.service.method("org.bluez.Agent1", in_signature="o", out_signature="u")
-    def RequestPasskey(self, device):
-        return int(self.wait_for_response("passkey", device))
-
-    @dbus.service.method("org.bluez.Agent1", in_signature="ou")
-    def RequestConfirmation(self, device, passkey):
-        self.wait_for_response("confirm", device, passkey)
-
-    @dbus.service.method("org.bluez.Agent1", in_signature="os")
-    def AuthorizeService(self, device, uuid):
-        self.wait_for_response("authorize", device, uuid)
-
-    @dbus.service.method("org.bluez.Agent1")
-    def Cancel(self):
-        print("Pairing cancelled by remote device")
-
-
-from agent import agent_signals
-
-agent_signals.pairing_request.connect(self.handle_async_pairing_request)
-
-def handle_async_pairing_request(self, req_type, device, parameter=None):
+def handle_pairing_request(self, req_type, device, parameter=None):
     device_address = device.split("dev_")[-1].replace("_", ":")
 
-    if req_type == "pin":
-        pin, ok = QInputDialog.getText(self, "Pairing Request", f"Enter PIN for device {device_address}:")
-        agent_signals.pairing_response.emit(pin if ok else "")
-    elif req_type == "passkey":
-        passkey, ok = QInputDialog.getInt(self, "Pairing Request", f"Enter Passkey for device {device_address}:")
-        agent_signals.pairing_response.emit(passkey if ok else 0)
-    elif req_type == "confirm":
-        reply = QMessageBox.question(self, "Confirm Pairing", f"Device {device_address} requests to pair with passkey: {parameter}\nAccept?", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-        agent_signals.pairing_response.emit(None if reply == QMessageBox.StandardButton.Yes else dbus.exceptions.DBusException("org.bluez.Error.Rejected"))
-    elif req_type == "authorize":
-        reply = QMessageBox.question(self, "Authorize Service", f"Device {device_address} wants to use service {parameter}\nAllow?", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-        agent_signals.pairing_response.emit(None if reply == QMessageBox.StandardButton.Yes else dbus.exceptions.DBusException("org.bluez.Error.Rejected"))
+    if req_type == "confirm":
+        self.show_confirmation_dialog(device_address, parameter)
+        return  # Return immediately to avoid blocking
+
+
+def show_confirmation_dialog(self, device_address, passkey):
+    msg_box = QMessageBox(self)
+    msg_box.setWindowTitle("Confirm Pairing")
+    msg_box.setText(f"Device {device_address} requests to pair with passkey: {passkey}\nAccept?")
+    msg_box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+    msg_box.setIcon(QMessageBox.Question)
+
+    def on_response(button):
+        if msg_box.standardButton(button) == QMessageBox.Yes:
+            self.add_device(device_address)
+            self.log.info("User accepted pairing confirmation")
+        else:
+            self.log.info("User rejected pairing confirmation")
+
+    msg_box.buttonClicked.connect(on_response)
+    msg_box.show()
+
+
+QTimer.singleShot(0, lambda: self.show_confirmation_dialog(device_address, passkey))
